@@ -2,6 +2,24 @@
 
 > PRD-agentic-memory §9.4 surfaces operational gap: /self-review hand-rolls index-vs-file divergence checks because there's no `recall doctor`.
 
+## Install
+
+### One-liner
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/j0yen/recall-doctor/main/install.sh | bash
+```
+
+### Manual
+
+```sh
+git clone --depth 1 https://github.com/j0yen/recall-doctor.git
+cd recall-doctor
+./install.sh
+```
+
+Installs the `recall-doctor` binary via `cargo install --path . --locked`. Requires `cargo` / `rustc 1.85+` and `git`. Built binary lands in `~/.cargo/bin/`.
+
 ## Why
 
 PRD-agentic-memory §9.4 surfaces operational gap: /self-review hand-rolls index-vs-file divergence checks because there's no `recall doctor`. The full v0.2 rebuild is multi-session work; this slice ships `recall-doctor` as a standalone companion binary that reads the v0.1 recall data dir, reports {file_count, indexed_count, orphans, missing, embedder_ids, schema_version}, and exits non-zero on divergence. When v0.2 properly rebuilds recall, `doctor` absorbs into the main binary; today it's a useful side-tool that closes the /self-review gap immediately.
