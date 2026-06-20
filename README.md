@@ -1,6 +1,10 @@
 # recall-doctor
 
-> PRD-agentic-memory §9.4 surfaces operational gap: /self-review hand-rolls index-vs-file divergence checks because there's no `recall doctor`.
+`fsck` for a [recall](https://github.com/j0yen/recall) memory store: report where the Markdown files and the SQLite index disagree, and exit non-zero when they do.
+
+A recall store has two halves that are supposed to mirror each other — the `.md` memory files on disk and the rows in the SQLite index. They drift. A file gets deleted by hand and its index row lingers; a file is added and never indexed; an embedder change leaves a mix of vector ids. None of this errors at write time, so the divergence sits there silently until a query returns something stale or nothing at all. `recall-doctor` reads both halves, compares them, and tells you exactly where they parted ways.
+
+It is read-only by default. It walks the store, prints a report, and sets its exit code so a script or a review step can gate on it.
 
 ## Install
 
@@ -18,55 +22,48 @@ cd recall-doctor
 ./install.sh
 ```
 
-Installs the `recall-doctor` binary via `cargo install --path . --locked`. Requires `cargo` / `rustc 1.85+` and `git`. Built binary lands in `~/.cargo/bin/`.
-
-## Why
-
-PRD-agentic-memory §9.4 surfaces operational gap: /self-review hand-rolls index-vs-file divergence checks because there's no `recall doctor`. The full v0.2 rebuild is multi-session work; this slice ships `recall-doctor` as a standalone companion binary that reads the v0.1 recall data dir, reports {file_count, indexed_count, orphans, missing, embedder_ids, schema_version}, and exits non-zero on divergence. When v0.2 properly rebuilds recall, `doctor` absorbs into the main binary; today it's a useful side-tool that closes the /self-review gap immediately.
-
-## Build
-
-```sh
-cargo build --release
-```
-
-Produces `target/release/recall-doctor`. Symlink into `~/.local/bin/` if you want it on `$PATH`.
+Builds and installs the `recall-doctor` binary with `cargo install --path . --locked` (lands in `~/.cargo/bin/`). Requires `cargo` / `rustc 1.85+` and `git`. The index check shells out to `sqlite3`; without it, `indexed_count` reports `null` with a warning.
 
 ## Usage
 
 ```sh
-recall-doctor --help
+# Check the default store (~/.claude/recall):
+recall-doctor
+
+# Point at another store, get JSON:
+recall-doctor --root /path/to/store --format json
+
+# Reindex if anything diverged (shells out to `recall reindex`):
+recall-doctor --fix
 ```
 
-## Audience
+The report has these fields:
 
-the author and /self-review Phase A reading divergence reports between the on-disk Markdown memory store (~/.claude/recall/memories/) and the SQLite index (~/.claude/recall/index/recall.sqlite). Output: JSON consumed by /self-review (and shell-pipeline), text for human terminal use.
+| Field | Meaning |
+|---|---|
+| `file_count` | `.md` files under `<root>/memories/` |
+| `indexed_count` | rows in the index's `memories_meta` table (`null` if the DB or `sqlite3` is missing) |
+| `orphans` | ids on disk but absent from the index |
+| `missing` | index rows whose file no longer exists |
+| `embedder_ids` | distinct embedding ids present — a mix means a half-finished reindex |
+| `schema_version` | the index schema version |
+| `warnings` | anything that couldn't be checked |
 
-## Acceptance criteria
+JSON output has deterministic key ordering: the same store produces byte-identical output, so it's safe to diff.
 
-This project was scaffolded from a PRD via the `autobuilder` pipeline. The MUST-level acceptance criteria are:
+Exit codes: `0` in sync (no orphans, no missing, `indexed_count == file_count`); `1` divergent; `2` invocation error (a `--root` that exists but isn't a directory, bad arguments). `--fix` runs `recall reindex` only when there's something to fix, and is the one mode that writes.
 
-- **AC1**: CLI binary `recall-doctor` accepts `[--root <dir>]` (default `~/.claude/recall`). Reads the directory, prints a divergence report to stdout, exits 0 when in sync. Empty/nonexistent root → exit 0 with empty report.
-- **AC2**: Walks `<root>/memories/` recursively, counting *.md files; ignores non-Markdown and dot-prefixed directories. Reports `file_count: N`.
-- **AC3**: Queries `<root>/index/recall.sqlite` `memories_meta` table for row count; reports `indexed_count: N`. Missing DB → `indexed_count: null` and warning. Shells out to `sqlite3` binary; absence of `sqlite3` → reports `indexed_count: null` + ...
-- **AC4**: Computes orphans: file IDs present on disk (parsed from frontmatter `id:` field) but not in `memories_meta`. Reports `orphans: [<id>...]` sorted lexicographically.
-- **AC5**: Computes missing: `memories_meta` rows whose `path` column points to a non-existent file. Reports `missing: [<id>...]` sorted lexicographically.
-- **AC6**: Reports `embedder_ids: [<id>...]` — distinct `embedding_id` values from `memories_meta` (excluding NULL). Empty list when no rows or no embeddings.
-- **AC7**: Output format selectable via `--format text|json` (default text). JSON shape: `{file_count, indexed_count, orphans, missing, embedder_ids, schema_version, warnings}`. Deterministic key ordering; same input → byte-identical output.
-- **AC8**: Exit code 0 when in sync (orphans+missing empty AND indexed_count == file_count). Exit code 1 when divergent. Exit code 2 on invocation error (bad --root that exists but isn't a dir, malformed args). Stable across runs.
-- **AC9**: `--fix` invokes `recall reindex` (shelling out via PATH) when orphans OR missing is non-empty. Default (no --fix) is read-only — never writes. When `recall` isn't on PATH, `--fix` emits a warning and exits with code 1.
+## Where it fits
 
-Each AC has a matching integration test under `tests/acceptance_ac<n>.rs`.
+Part of the recall family:
 
-## Provenance
+- **[recall](https://github.com/j0yen/recall)** — the agentic-memory store itself. It ships a built-in `recall doctor`; this standalone binary predates it, runs against any store, and is convenient as a `/self-review` gate or a CI step.
+- **[recall-io](https://github.com/j0yen/recall-io)** — backup and migration for the same store (NDJSON export/import).
 
-Built via the [`autobuilder`](https://github.com/j0yen/autobuilder) pipeline (PRD intake -> intent-card -> scaffold -> iterate-and-prove). Originally consolidated as a subdir of the [`wintermute`](https://github.com/j0yen/wintermute) monorepo; this standalone repo is a fresh-init snapshot for easier consumption and distribution.
+## Status
+
+Each acceptance criterion has a matching integration test under `tests/acceptance_ac<n>.rs`. Built via the [`autobuilder`](https://github.com/j0yen/autobuilder) pipeline (PRD intake → intent-card → scaffold → iterate-and-prove). Originally a subdirectory of the [`wintermute`](https://github.com/j0yen/wintermute) monorepo; this repo is the standalone distribution.
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Dual-licensed under MIT OR Apache-2.0; pick whichever fits. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
